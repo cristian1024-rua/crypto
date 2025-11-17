@@ -1,0 +1,13 @@
+:root {
+  --bg: #111;
+  --fg: #eee;
+  --accent: #0af;
+}
+body { margin: 0; font-family: system-ui, sans-serif; background: var(--bg); color: var(--fg); display: flex; height: 100vh; }
+#app { width: 100%; display: flex; align-items: center; justify-content: center; }
+form { display: grid; gap: .5rem; }
+aside { width: 250px; border-right: 1px solid #333; padding: 1rem; }
+main { flex: 1; padding: 1rem; }
+input { padding: .5rem; width: 100%; }
+#trading-panel { margin-top: 1rem; display: grid; gap: .5rem; max-width: 400px; }
+#chart-container { margin-top: 1rem; }
