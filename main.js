@@ -44,28 +44,99 @@ store.subscribe(() => {
   }
 });
 
-function onLogin(email, password) {
+async function onLogin(email, password) {
   console.log('6️⃣ onLogin llamado con:', email, password);
-  apiService.login(email, password)
-    .then(data => {
-      console.log('7️⃣ Login OK → dispatching token');
-      store.dispatch({ type: 'auth/setLoginSuccess', payload: data });
-      const userId = 5;
-      return apiService.get(`https://reqres.in/api/users/${userId}`);
-    })
-    .then(user => apiService.get(`https://jsonplaceholder.typicode.com/users/${user.data.id}/posts`))
-    .then(posts => {
-      const list = posts.map(p => p.title.split(' ')[0].toLowerCase());
-      store.dispatch(watchlistSlice.actions.setWatchlist(list));
-      return Promise.all(list.map(id =>
-        fetch(`https://api.coincap.io/v2/assets/${id}`).then(r => r.json())
-      ));
-    })
-    .then(prices => {
-      const mapped = prices.map(p => ({ id: p.data.id, priceUsd: p.data.priceUsd }));
-      store.dispatch(marketSlice.actions.setInitialPrices(mapped));
+  try {
+    const loginData = await apiService.login(email, password);
+    console.log('7️⃣ Login OK → dispatching token', loginData);
+    store.dispatch({ type: 'auth/setLoginSuccess', payload: loginData });
+
+    // Obtener user (reqres) y luego posts (jsonplaceholder)
+    const userId = 5;
+    const user = await apiService.get(`https://reqres.in/api/users/${userId}`);
+    if (!user || !user.data) {
+      console.warn('⚠️ Usuario no encontrado en reqres:', user);
+    }
+
+    const postsResp = await apiService.get(`https://jsonplaceholder.typicode.com/users/${user?.data?.id ?? userId}/posts`);
+    const posts = Array.isArray(postsResp) ? postsResp : postsResp?.data ?? [];
+    if (!posts.length) {
+      console.warn('⚠️ No se obtuvieron posts para el usuario:', postsResp);
+    }
+
+    // Derivar lista inicial desde títulos (frágil): mantener pero con validación
+    const list = posts
+      .map(p => (p.title || '').split(' ')[0].toLowerCase())
+      .filter(Boolean)
+      .slice(0, 10); // limitar número para no saturar API
+
+    // Si no generó ningún término válido, usar watchlist por defecto
+    const finalList = list.length ? list : ['bitcoin', 'ethereum', 'tether', 'usd-coin'];
+
+    store.dispatch(watchlistSlice.actions.setWatchlist(finalList));
+
+    // Función que obtiene precios desde CoinGecko (sin API key)
+    async function fetchPricesFromCoinGecko(terms) {
+      const normalized = terms.map(t => String(t).toLowerCase().trim()).filter(Boolean);
+      const prices = [];
+
+      if (!normalized.length) return prices;
+
+      // Intento agrupado: pedir mercados por ids directos
+      try {
+        const idsParam = normalized.join(',');
+        const res = await fetch(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${encodeURIComponent(idsParam)}`);
+        if (res.ok) {
+          const data = await res.json();
+          data.forEach(d => prices.push({ id: d.id, priceUsd: String(d.current_price) }));
+        } else {
+          console.warn('CoinGecko markets request failed:', res.status);
+        }
+      } catch (err) {
+        console.warn('Error petición CoinGecko markets directa:', err);
+      }
+
+      // Determine qué términos siguen sin precio (no devueltos)
+      const foundIds = new Set(prices.map(p => p.id));
+      const missing = normalized.filter(t => !foundIds.has(t));
+
+      // Para cada missing, usar /search para obtener un id candidato y pedir su precio
+      for (const m of missing) {
+        try {
+          const resp = await fetch(`https://api.coingecko.com/api/v3/search?query=${encodeURIComponent(m)}`);
+          if (!resp.ok) continue;
+          const j = await resp.json();
+          if (j && Array.isArray(j.coins) && j.coins.length) {
+            const candidateId = j.coins[0].id;
+            const r2 = await fetch(`https://api.coingecko.com/api/v3/coins/markets?vs_currency=usd&ids=${encodeURIComponent(candidateId)}`);
+            if (!r2.ok) continue;
+            const arr = await r2.json();
+            if (Array.isArray(arr) && arr[0]) {
+              prices.push({ id: arr[0].id, priceUsd: String(arr[0].current_price) });
+            }
+          }
+        } catch (err) {
+          console.warn('Error búsqueda CoinGecko para', m, err);
+        }
+      }
+
+      return prices;
+    }
+
+    // Obtener precios (limitado)
+    const prices = await fetchPricesFromCoinGecko(finalList.slice(0, 10));
+    if (!prices || !prices.length) {
+      console.warn('⚠️ No se obtuvieron precios válidos desde CoinGecko, revisa los términos:', finalList);
       facade.startBootLoad();
-      facade.startMarketFeed();
-    })
-    .catch(err => console.error('❌ Error en cadena:', err));
+      return;
+    }
+
+    const mapped = prices.map(p => ({ id: p.id, priceUsd: p.priceUsd }));
+    store.dispatch(marketSlice.actions.setInitialPrices(mapped));
+    facade.startBootLoad();
+    facade.startMarketFeed();
+    console.log('✅ Bootload y market feed iniciados con precios:', mapped);
+  } catch (err) {
+    console.error('❌ Error en onLogin:', err);
+  }
 }
